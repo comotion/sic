@@ -1,4 +1,5 @@
  /* See LICENSE file for license details. */
+#include <fcntl.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -8,13 +9,14 @@
 #include <time.h>
 #include <unistd.h>
 
-static char *host = "irc.oftc.net";
+static char *host = "213.179.58.83";
 static char *port = "6667";
 static char *password;
 static char nick[32];
 static char bufin[4096];
 static char bufout[4096];
 static char channel[256];
+static char *joins[16];
 static time_t trespond;
 static FILE *srv;
 
@@ -29,9 +31,11 @@ pout(char *channel, char *fmt, ...) {
 	va_start(ap, fmt);
 	vsnprintf(bufout, sizeof bufout, fmt, ap);
 	va_end(ap);
-	t = time(NULL);
-	strftime(timestr, sizeof timestr, "%D %R", localtime(&t));
-	fprintf(stdout, "%-12s: %s %s\n", channel, timestr, bufout);
+	//t = time(NULL);
+	//strftime(timestr, sizeof timestr, "%D %R", localtime(&t));
+	//fprintf(stdout, "%-12s: %s %s\n", channel, timestr, bufout);
+	//fprintf(stdout, "%s/%s\n", channel,bufout);
+	fprintf(stdout, "%s\n", bufout);
 }
 
 static void
@@ -50,7 +54,7 @@ privmsg(char *channel, char *msg) {
 		pout("", "No channel to send to");
 		return;
 	}
-	pout(channel, "<%s> %s", nick, msg);
+	//pout(channel, "%s: %s", nick, msg);
 	sout("PRIVMSG %s :%s", channel, msg);
 }
 
@@ -120,12 +124,22 @@ parsesrv(char *cmd) {
 	trim(par);
 	if(!strcmp("PONG", cmd))
 		return;
-	if(!strcmp("PRIVMSG", cmd))
-		pout(par, "<%s> %s", usr, txt);
+   if(!strcmp("PRIVMSG", cmd)){
+      int l = strlen(nick);
+      if(!strncmp(txt, nick, l)){
+         txt = skip(txt, ':');
+         if(txt[0] == ' ') txt = skip(txt, ' ');
+         if(txt[0] != '\0') {
+            pout(par, "%s", txt);
+            strlcpy(channel, par, sizeof channel); // switch channel
+         }
+      }
+   }
+   //pout(par, "%s: %s", usr, txt);
 	else if(!strcmp("PING", cmd))
 		sout("PONG %s", txt);
 	else {
-		pout(usr, ">< %s (%s): %s", cmd, par, txt);
+		//pout(usr, ">< %s (%s): %s", cmd, par, txt);
 		if(!strcmp("NICK", cmd) && !strcmp(usr, nick))
 			strlcpy(nick, txt, sizeof nick);
 	}
@@ -133,7 +147,7 @@ parsesrv(char *cmd) {
 
 int
 main(int argc, char *argv[]) {
-	int i, c;
+	int i, c, j = 0;
 	struct timeval tv;
 	const char *user = getenv("USER");
 	fd_set rd;
@@ -156,6 +170,9 @@ main(int argc, char *argv[]) {
 		case 'k':
 			if(++i < argc) password = argv[i];
 			break;
+      case 'j':
+         if(++i < argc) joins[j++] = argv[i];
+         break;
 		case 'v':
 			eprint("sic-"VERSION", © 2005-2012 Kris Maglione, Anselm R. Garbe, Nico Golde\n");
 		default:
@@ -173,6 +190,15 @@ main(int argc, char *argv[]) {
 	fflush(srv);
 	setbuf(stdout, NULL);
 	setbuf(srv, NULL);
+   char jb[256];
+   while(j--){
+      sprintf(jb, ":j %s\n", joins[j]);
+      parsein(jb);
+   }
+   int flags = fcntl(0, F_GETFL, 0);
+   flags |= O_NONBLOCK;
+   fcntl(0, F_SETFL, flags);
+
 	for(;;) { /* main loop */
 		FD_ZERO(&rd);
 		FD_SET(0, &rd);
@@ -198,9 +224,10 @@ main(int argc, char *argv[]) {
 			trespond = time(NULL);
 		}
 		if(FD_ISSET(0, &rd)) {
-			if(fgets(bufin, sizeof bufin, stdin) == NULL)
-				eprint("sic: broken pipe\n");
-			parsein(bufin);
+         while(fgets(bufin, sizeof bufin, stdin) != NULL)
+            parsein(bufin);
+         if(errno != EWOULDBLOCK && ferror(stdin))
+            eprint("sic: broken pipe\n");
 		}
 	}
 	return 0;
